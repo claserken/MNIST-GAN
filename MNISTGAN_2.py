@@ -14,7 +14,8 @@ train_images = (train_images - 127.5) / 127.5 # Normalize the images to [-1, 1]
 BUFFER_SIZE = 60000
 BATCH_SIZE = 256
 # Batch and shuffle the data
-train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_labels)).shuffle(BUFFER_SIZE).batch(BATCH_SIZE)
+train_dataset1 = tf.data.Dataset.from_tensor_slices((train_images, train_labels)).shuffle(BUFFER_SIZE, seed=1).batch(BATCH_SIZE)
+train_dataset2 = tf.data.Dataset.from_tensor_slices((train_images, train_labels)).shuffle(BUFFER_SIZE, seed=2).batch(BATCH_SIZE)
 # train_dataset = tf.data.Dataset.from_tensor_slices(train_images, train_labels)
 
 # for i, batch in enumerate(train_dataset):
@@ -24,6 +25,7 @@ train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_labels))
 #           print(batch[1][j])
 # # print(train_dataset[0])
 # exit()
+
 print('starting')
 def make_generator_model():
     model = tf.keras.Sequential()
@@ -80,7 +82,7 @@ def one_hot(n, fake=False):
 cross_entropy = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
 
 def discriminator_loss(real_labels, real_output, fake_labels, fake_output, fake_labels_cross, fake_output_cross):
-    return cross_entropy(one_hot(real_labels), real_output) + 0.8*cross_entropy(one_hot(fake_labels, fake=True), fake_output) + 0.2*cross_entropy(one_hot(fake_labels_cross, fake=True), fake_output_cross)
+    return cross_entropy(one_hot(real_labels), real_output) + 0.7*cross_entropy(one_hot(fake_labels, fake=True), fake_output) + 0.3*cross_entropy(one_hot(fake_labels_cross, fake=True), fake_output_cross)
     # return cross_entropy(tf.ones_like(fake_output), fake_output)
 
 def generator_loss(labels, fake_output):
@@ -95,12 +97,12 @@ discriminator1 = make_discriminator_model()
 generator2 = make_generator_model()
 discriminator2 = make_discriminator_model()
 
-checkpoint_dir = './training_checkpoints'
-checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
-checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
-                                 discriminator_optimizer=discriminator_optimizer,
-                                 generator=generator,
-                                 discriminator=discriminator)
+# checkpoint_dir = './training_checkpoints'
+# checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
+# checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
+#                                  discriminator_optimizer=discriminator_optimizer,
+#                                  generator=generator,
+#                                  discriminator=discriminator)
 EPOCHS = 50
 noise_dim = 50
 num_examples_to_generate = 10
@@ -128,11 +130,10 @@ def train_step(batch1, batch2):
     noise1 = tf.concat([encoded, noise1], 1)
     noise2 = tf.concat([encoded, noise2], 1)
 
-    with tf.GradientTape() as gen1_tape, tf.GradientTape() as disc1_tape,
-         tf.GradientTape() as gen2_tape, tf.GradientTape() as disc2_tape:
+    with tf.GradientTape() as gen1_tape, tf.GradientTape() as disc1_tape, tf.GradientTape() as gen2_tape, tf.GradientTape() as disc2_tape:
 
-        generated_images1 = generator1(noise, training=True)
-        generated_images2 = generator2(noise, training=True)
+        generated_images1 = generator1(noise1, training=True)
+        generated_images2 = generator2(noise2, training=True)
 
         real_output1 = discriminator1(batch1[0], training=True)
         fake_output1 = discriminator1(generated_images1, training=True)
@@ -142,17 +143,17 @@ def train_step(batch1, batch2):
         fake_output2 = discriminator2(generated_images2, training=True)
         fake_output2_cross = discriminator2(generated_images1, training=True)
         
-        gen1_loss = 0.8*generator_loss(labels=arr, fake_output=fake_output1) + 0.2*generator_loss(labels=arr, fake_output=fake_output2_cross)
+        gen1_loss = 0.7*generator_loss(labels=arr, fake_output=fake_output1) + 0.3*generator_loss(labels=arr, fake_output=fake_output2_cross)
         disc1_loss = discriminator_loss(real_labels=batch1[1].numpy(), real_output=real_output1, fake_labels=arr, fake_output=fake_output1, fake_labels_cross=arr, fake_output_cross=fake_output1_cross) 
 
-        gen2_loss = 0.8*generator_loss(labels=arr, fake_output=fake_output2) + 0.2*generator_loss(labels=arr, fake_output=fake_output1_cross)
+        gen2_loss = 0.7*generator_loss(labels=arr, fake_output=fake_output2) + 0.3*generator_loss(labels=arr, fake_output=fake_output1_cross)
         disc2_loss = discriminator_loss(real_labels=batch2[1].numpy(), real_output=real_output2, fake_labels=arr, fake_output=fake_output2, fake_labels_cross=arr, fake_output_cross=fake_output2_cross)                    
 
         gradients_of_generator1 = gen1_tape.gradient(gen1_loss, generator1.trainable_variables)
         gradients_of_discriminator1 = disc1_tape.gradient(disc1_loss, discriminator1.trainable_variables)
 
-        gradients_of_generator2 = gen2_tape.gradient(gen2_loss, generator1.trainable_variables)
-        gradients_of_discriminator2 = disc2_tape.gradient(disc2_loss, discriminator1.trainable_variables)
+        gradients_of_generator2 = gen2_tape.gradient(gen2_loss, generator2.trainable_variables)
+        gradients_of_discriminator2 = disc2_tape.gradient(disc2_loss, discriminator2.trainable_variables)
 
         generator_optimizer1.apply_gradients(zip(gradients_of_generator1, generator1.trainable_variables))
         discriminator_optimizer1.apply_gradients(zip(gradients_of_discriminator1, discriminator1.trainable_variables))
@@ -160,12 +161,12 @@ def train_step(batch1, batch2):
         generator_optimizer2.apply_gradients(zip(gradients_of_generator2, generator2.trainable_variables))
         discriminator_optimizer2.apply_gradients(zip(gradients_of_discriminator2, discriminator2.trainable_variables))
 
-def train(dataset, epochs):
+def train(dataset1, dataset2, epochs):
   for epoch in range(epochs):
     start = time.time()
 
-    for i in len(dataset):
-      train_step(dataset[i], dataset[-i-1])
+    for batch1, batch2 in zip(dataset1, dataset2):
+      train_step(batch1, batch2)
 
     # Produce images for the GIF as we go
     display.clear_output(wait=True)
@@ -177,8 +178,8 @@ def train(dataset, epochs):
                              epoch + 1,
                              seed,"gen2")
     # Save the model every 15 epochs
-    if (epoch + 1) % 15 == 0:
-      checkpoint.save(file_prefix = checkpoint_prefix)
+    # if (epoch + 1) % 15 == 0:
+    #   checkpoint.save(file_prefix = checkpoint_prefix)
 
     print ('Time for epoch {} is {} sec'.format(epoch + 1, time.time()-start))
 
@@ -193,9 +194,9 @@ def generate_and_save_images(model, epoch, test_input, name ):
       plt.subplot(4, 4, i+1)
       plt.imshow(predictions[i, :, :, 0] * 127.5 + 127.5, cmap='gray')
       plt.axis('off')
-      plt.savefig(name + "_" + 'image_at_epoch_{:04d}.png'.format(epoch))
+      plt.savefig('./V3 Images/' + name + "_" + 'image_at_epoch_{:04d}.png'.format(epoch))
 
-train(train_dataset, EPOCHS)
+train(train_dataset1, train_dataset2, EPOCHS)
 
 generator1.save("./DoubleGANV1/generator1")
 discriminator1.save("./DoubleGANV1/discriminator1")

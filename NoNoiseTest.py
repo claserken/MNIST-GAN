@@ -2,8 +2,8 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from tensorflow.keras.models import load_model
 
-generator = load_model("./generator")
-discriminator = load_model("./discriminator")
+generator = load_model("./DoubleGANV1/generator2")
+# discriminator = load_model("./discriminator")
 
 fig = plt.figure(figsize=(4,4))
 
