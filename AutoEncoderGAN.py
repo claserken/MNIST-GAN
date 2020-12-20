@@ -38,8 +38,29 @@ train_dataset = tf.data.Dataset.from_tensor_slices(train_images).shuffle(BUFFER_
 # 
 # The generator uses `tf.keras.layers.Conv2DTranspose` (upsampling) layers to produce an image from a seed (random noise). Start with a `Dense` layer that takes this seed as input, then upsample several times until you reach the desired image size of 28x28x1. Notice the `tf.keras.layers.LeakyReLU` activation for each layer, except the output layer which uses tanh.
 
+def make_seedifier_model():
+    model = tf.keras.Sequential()
+    
+    model.add(layers.Conv2D(64, (5, 5), strides=(2, 2), padding='same',
+                                     input_shape=[28, 28, 1]))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.3))
+
+    model.add(layers.Conv2D(128, (5, 5), strides=(2, 2), padding='same'))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.3))
+
+    model.add(layers.Flatten())
+    model.add(layers.Dense(51))
+
+    return model
+
+    
 def make_generator_model():
     model = tf.keras.Sequential()
+    
+    model.add(layers.Dense(100, input_shape=(51,)))
+    model.add(layers.LeakyReLU())
     model.add(layers.Dense(7*7*256, use_bias=False, input_shape=(100,)))
     model.add(layers.BatchNormalization())
     model.add(layers.LeakyReLU())
@@ -65,7 +86,7 @@ def make_generator_model():
 
 # Use the (as yet untrained) generator to create an image.
 
-
+seedifier = make_seedifier_model()
 generator = make_generator_model()
 
 noise = tf.random.normal([1, 100])
@@ -105,7 +126,7 @@ discriminator = make_discriminator_model()
 
 # This method returns a helper function to compute cross entropy loss
 cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-
+mean_average = tf.keras.losses.MAE()
 
 # ### Discriminator loss
 # 
@@ -123,14 +144,17 @@ def discriminator_loss(real_output, fake_output):
 # The generator's loss quantifies how well it was able to trick the discriminator. Intuitively, if the generator is performing well, the discriminator will classify the fake images as real (or 1). Here, we will compare the discriminators decisions on the generated images to an array of 1s.
 
 
-def generator_loss(fake_output):
-    return cross_entropy(tf.ones_like(fake_output), fake_output)
+def generator_loss(fake_output, image_input, image_output):
+    loss = cross_entropy(tf.ones_like(fake_output), fake_output)
+    loss += cross_entropy(image_input, image_output)
+    return loss
 
 
 # The discriminator and the generator optimizers are different since we will train two networks separately.
 
 
 generator_optimizer = tf.keras.optimizers.Adam(1e-4)
+seedifier_optimizer = tf.keras.optimizers.Adam(1e-4)
 discriminator_optimizer = tf.keras.optimizers.Adam(1e-4)
 
 # ## Define the training loop
@@ -138,12 +162,23 @@ discriminator_optimizer = tf.keras.optimizers.Adam(1e-4)
 
 
 EPOCHS = 50
-noise_dim = 100
+noise_dim = 50
 num_examples_to_generate = 16
 
 # We will reuse this seed overtime (so it's easier)
 # to visualize progress in the animated GIF)
-seed = tf.random.normal([num_examples_to_generate, noise_dim])
+
+randomseed = tf.random.normal([num_examples_to_generate, noise_dim])
+originalimagefig = plt.figure(figsize=(4,4))
+
+for i in range(num_examples_to_generate):
+  digitimage = train_dataset[0][i]
+  plt.subplot(4, 4, i+1)
+  plt.imshow(digitimage * 127.5 + 127.5, cmap='gray')
+  plt.axis('off')
+
+plt.show()  
+
 
 
 # The training loop begins with generator receiving a random seed as input. That seed is used to produce an image. The discriminator is then used to classify real images (drawn from the training set) and fakes images (produced by the generator). The loss is calculated for each of these models, and the gradients are used to update the generator and discriminator.
@@ -151,25 +186,29 @@ seed = tf.random.normal([num_examples_to_generate, noise_dim])
 
 # Notice the use of `tf.function`
 # This annotation causes the function to be "compiled".
-@tf.function
+# @tf.function
 def train_step(images):
+    originalseeds = seedifier(images, training=True)
+    firstparam = originalseeds.numpy()[0].T
     noise = tf.random.normal([BATCH_SIZE, noise_dim])
 
+    seedsrandomized = tf.concat([firstparam, noise], 1)
+
     with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
-      generated_images = generator(noise, training=True)
+      generated_images = generator(seedsrandomized, training=True)
 
       real_output = discriminator(images, training=True)
       fake_output = discriminator(generated_images, training=True)
 
-      gen_loss = generator_loss(fake_output)
+      gen_loss = generator_loss(fake_output, images, generator(originalseeds, training=True))
       disc_loss = discriminator_loss(real_output, fake_output)
 
-    gradients_of_generator = gen_tape.gradient(gen_loss, generator.trainable_variables)
+    [gradients_of_generator, gradients_of_seedifier] = gen_tape.gradient(gen_loss, [generator.trainable_variables, seedifier.training_variables])
     gradients_of_discriminator = disc_tape.gradient(disc_loss, discriminator.trainable_variables)
 
     generator_optimizer.apply_gradients(zip(gradients_of_generator, generator.trainable_variables))
+    seedifier_optimizer.apply_gradients(zip(gradients_of_seedifier, seedifier.training_variables))
     discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator.trainable_variables))
-
 
 
 def train(dataset, epochs):
@@ -182,26 +221,31 @@ def train(dataset, epochs):
     # Produce images for the GIF as we go
     display.clear_output(wait=True)
     generate_and_save_images(generator,
-                             epoch + 1,
-                             seed)
+                             epoch + 1)
 
     print ('Time for epoch {} is {} sec'.format(epoch + 1, time.time()-start))
 
   # Generate after the final epoch
   display.clear_output(wait=True)
   generate_and_save_images(generator,
-                           epochs,
-                           seed)
+                           epochs)
 
 
 # **Generate and save images**
 # 
 
 
-def generate_and_save_images(model, epoch, test_input):
+def generate_and_save_images(model, epoch):
   # Notice `training` is set to False.
   # This is so all layers run in inference mode (batchnorm).
-  predictions = model(test_input, training=False)
+  firstseedarray = np.zeros(shape=(num_examples_to_generate, 1))
+  for i in range(num_examples_to_generate):
+    digitimage = train_dataset[0][i]
+    firstseedarray[i] = seedifier(digitimage, training=False).numpy()[0]
+
+  finalinput = tf.concat([firstseedarray, randomseed], 1)
+
+  predictions = model(finalinput, training=False)
 
   fig = plt.figure(figsize=(4,4))
 
