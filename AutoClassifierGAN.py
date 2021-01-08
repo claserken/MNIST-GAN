@@ -14,7 +14,7 @@ train_images = (train_images - 127.5) / 127.5 # Normalize the images to [-1, 1]
 BUFFER_SIZE = 60000
 BATCH_SIZE = 256
 # Batch and shuffle the data
-train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_labels)).shuffle(BUFFER_SIZE).batch(BATCH_SIZE)
+train_dataset = tf.data.Dataset.from_tensor_slices(train_images).shuffle(BUFFER_SIZE).batch(BATCH_SIZE)
 # train_dataset = tf.data.Dataset.from_tensor_slices(train_images, train_labels)
 
 # for i, batch in enumerate(train_dataset):
@@ -24,10 +24,13 @@ train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_labels))
 #           print(batch[1][j])
 # # print(train_dataset[0])
 # exit()
-print('starting')
+
+categories = 10
+noise_dim = 50
+
 def make_generator_model():
     model = tf.keras.Sequential()
-    model.add(layers.Dense(100, input_shape=(60,)))
+    model.add(layers.Dense(100, input_shape=(categories + noise_dim,)))
     model.add(layers.LeakyReLU())
     model.add(layers.Dense(7*7*256, use_bias=False))
     model.add(layers.BatchNormalization())
@@ -45,6 +48,7 @@ def make_generator_model():
     model.add(layers.Conv2DTranspose(1, (5, 5), strides=(2, 2), padding='same', use_bias=False, activation='tanh'))
     assert model.output_shape == (None, 28, 28, 1)
     return model
+
 def make_discriminator_model():
     model = tf.keras.Sequential()
     model.add(layers.Conv2D(64, (5, 5), strides=(2, 2), padding='same',
@@ -55,16 +59,29 @@ def make_discriminator_model():
     model.add(layers.LeakyReLU())
     model.add(layers.Dropout(0.3))
     model.add(layers.Flatten())
-    model.add(layers.Dense(20))
+    model.add(layers.Dense(2*categories))
+    return model
+    
+def make_classifier_model():
+    model = tf.keras.Sequential()
+    model.add(layers.Conv2D(64, (5, 5), strides=(2, 2), padding='same',
+                                     input_shape=[28, 28, 1]))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.3))
+    model.add(layers.Conv2D(128, (5, 5), strides=(2, 2), padding='same'))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.3))
+    model.add(layers.Flatten())
+    model.add(layers.Dense(categories))
     return model
 
 def one_hot(n, fake=False):
-    arr = np.zeros((len(n), 20))
+    arr = np.zeros((len(n), 2*categories))
     for i, a in enumerate(n):
         #print(type(i))
         #print(type(a))
         if fake:
-            a += 10
+            a += categories
         arr[i][a] = 1
     # arr = [0]*20
     # a = n
@@ -80,7 +97,9 @@ def one_hot(n, fake=False):
 cross_entropy = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
 
 def discriminator_loss(real_labels, real_output, fake_labels, fake_output):
-    return cross_entropy(one_hot(real_labels), real_output) + cross_entropy(one_hot(fake_labels, fake=True), fake_output)
+    extrazeros = np.zeros(shape=(real_output.shape[0], categories))
+    real_labels = tf.concat([real_labels, extrazeros], 1)
+    return cross_entropy(real_labels, real_output) + cross_entropy(one_hot(fake_labels, fake=True), fake_output)
     # return cross_entropy(tf.ones_like(fake_output), fake_output)
 
 def generator_loss(labels, fake_output):
@@ -88,16 +107,12 @@ def generator_loss(labels, fake_output):
 
 generator_optimizer = tf.keras.optimizers.Adam(1e-4)
 discriminator_optimizer = tf.keras.optimizers.Adam(1e-4)
+clf_optimizer = tf.keras.optimizers.Adam(1e-4)
 generator = make_generator_model()
 discriminator = make_discriminator_model()
-checkpoint_dir = './training_checkpoints'
-checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
-checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
-                                 discriminator_optimizer=discriminator_optimizer,
-                                 generator=generator,
-                                 discriminator=discriminator)
+classifier = make_classifier_model()
+
 EPOCHS = 50
-noise_dim = 50
 num_examples_to_generate = 10
 # to visualize progress in the animated GIF)
 seed = tf.random.normal([num_examples_to_generate, noise_dim])
@@ -115,39 +130,44 @@ def train_step(images):
     arr = [0]*BATCH_SIZE
     
     for i in range(BATCH_SIZE):
-        arr[i] = (i % 10)
+        arr[i] = (i % categories)
     
-    encoded = one_hot(arr)[:, :10]
+    encoded = one_hot(arr)[:, :categories]
     noise = tf.concat([encoded, noise], 1)
-    with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
+
+    #discriminator_linear_coefficients = np.zeros(shape=())    
+    with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape, tf.GradientTape(persistent=True) as clf_tape:
         generated_images = generator(noise, training=True)
 
-        real_output = discriminator(images[0], training=True)
+        real_output = discriminator(images, training=True)
+        real_labels = classifier(images, training=True)
+        # real_labels = np.ones(shape=(real_output.shape[0], categories))/10
+        # real_labels.concat(np.zeros((256, 10)))
         fake_output = discriminator(generated_images, training=True)
 
         gen_loss = generator_loss(labels=arr, fake_output=fake_output)
-        disc_loss = discriminator_loss(real_labels=images[1].numpy(), real_output=real_output, fake_labels=arr, fake_output=fake_output)
+        disc_loss = discriminator_loss(real_labels=real_labels, real_output=real_output, fake_labels=arr, fake_output=fake_output)
+        # clf_loss = gen_loss + disc_loss
 
         gradients_of_generator = gen_tape.gradient(gen_loss, generator.trainable_variables)
         gradients_of_discriminator = disc_tape.gradient(disc_loss, discriminator.trainable_variables)
+        
+        # gradients_of_discriminator
 
-        # generator.trainable_variables = generator.trainable_variables - tf.multiply(gradients_of_generator, 0.005)
-        # discriminator.trainable_variables = discriminator.trainable_variables - tf.multiply(gradients_of_discriminator, 0.005)
 
-        for a,b in zip(gradients_of_generator, generator.trainable_variables):
-            b = b - 0.005*a
-            print(a)
-            print(b)
-            print(b-a)
+        # approximated_gradient_discriminator_chain1_arr = [np.ndarray.flatten(elem) for elem in clf_tape.gradient(gradients_of_discriminator, classifier.trainable_variables)]
+        # approximated_gradient_discriminator_chain1 = numpy.concatenate(approximated_gradient_discriminator_chain1_arr)
+        # ^ Would this work?
 
-        for a,b in zip(gradients_of_discriminator, discriminator.trainable_variables):
-            b = b - 0.005*a
+        approximated_gradient_discriminator_chain1 = clf_tape.jacobian(tf.squeeze(gradients_of_discriminator), classifier.trainable_variables)
+        # approximated_gradient_discriminator_chain2 = clf_tape.jacobian(tf.keras.layers.Flatten(gradients_of_discriminator), discriminator.trainable_variables)
 
-        # (generator.trainable_variables).assign_sub(0.005*gradients_of_generator)
-        # (discriminator.trainable_variables).assign_sub(0.005*gradients_of_discriminator)
-        # generator_optimizer.apply_gradients(zip(gradients_of_generator, generator.trainable_variables))
-        # discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator.trainable_variables))
+        for elem in approximated_gradient_discriminator_chain1:
+            print(elem.shape)
 
+        generator_optimizer.apply_gradients(zip(gradients_of_generator, generator.trainable_variables))
+        discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator.trainable_variables))
+        # clf_optimizer.apply_gradients(zip(gradients_of_classifier, classifier.trainable_variables))
 
 def train(dataset, epochs):
   for epoch in range(epochs):
@@ -161,11 +181,6 @@ def train(dataset, epochs):
     generate_and_save_images(generator,
                              epoch + 1,
                              seed)
-
-    # Save the model every 15 epochs
-    if (epoch + 1) % 15 == 0:
-      checkpoint.save(file_prefix = checkpoint_prefix)
-
     print ('Time for epoch {} is {} sec'.format(epoch + 1, time.time()-start))
 
 def generate_and_save_images(model, epoch, test_input):
