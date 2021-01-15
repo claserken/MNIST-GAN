@@ -85,39 +85,26 @@ def make_generator_model():
 
     return model
 
+def make_discriminator_model():
+    model = tf.keras.Sequential()
+
+    model.add(layers.Dense(30, input_shape=(noise_dim + num_fixed,)))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.3))
+
+    model.add(layers.Dense(30))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.2))
+    model.add(layers.Dense(1, activation='sigmoid'))
+
+    return model
+
 
 # Use the (as yet untrained) generator to create an image.
 
 seedifier = make_seedifier_model()
 generator = make_generator_model()
-
-# ### The Discriminator
-# 
-# The discriminator is a CNN-based image classifier.
-
-
-def make_discriminator_model():
-    model = tf.keras.Sequential()
-    model.add(layers.Conv2D(64, (5, 5), strides=(2, 2), padding='same',
-                                     input_shape=(28, 28, 1)))
-    model.add(layers.LeakyReLU())
-    model.add(layers.Dropout(0.3))
-
-    model.add(layers.Conv2D(128, (5, 5), strides=(2, 2), padding='same'))
-    model.add(layers.LeakyReLU())
-    model.add(layers.Dropout(0.3))
-
-    model.add(layers.Flatten())
-    model.add(layers.Dense(1))
-
-    return model
-
 discriminator = make_discriminator_model()
-
-# ## Define the loss and optimizers
-# 
-# Define loss functions and optimizers for both models.
-# 
 
 
 # This method returns a helper function to compute cross entropy loss
@@ -128,14 +115,6 @@ mae = tf.keras.losses.MeanAbsoluteError()
 # ### Discriminator loss
 # 
 # This method quantifies how well the discriminator is able to distinguish real images from fakes. It compares the discriminator's predictions on real images to an array of 1s, and the discriminator's predictions on fake (generated) images to an array of 0s.
-
-
-def discriminator_loss(real_output, fake_output):
-    real_loss = cross_entropy(tf.ones_like(real_output), real_output)
-    fake_loss = cross_entropy(tf.zeros_like(fake_output), fake_output)
-    total_loss = real_loss + fake_loss
-    return total_loss
-
 
 # ### Generator loss
 # The generator's loss quantifies how well it was able to trick the discriminator. Intuitively, if the generator is performing well, the discriminator will classify the fake images as real (or 1). Here, we will compare the discriminators decisions on the generated images to an array of 1s.
@@ -152,6 +131,16 @@ def autoencoder_loss(image_input, image_output):
     # loss = cross_entropy(image_input, image_output)/(28*28)
     return loss
 
+def discriminator_loss(gaussian_output, seedifier_out):
+  disc_gaussian = discriminator(gaussian_output, training=True)
+  disc_seedifier = discriminator(seedifier_out, training=True)
+
+  loss = cross_entropy(disc_gaussian, tf.ones_like(disc_gaussian)) 
+  loss += cross_entropy(disc_seedifier, tf.zeros_like(disc_seedifier))
+
+  adv_loss = cross_entropy(disc_seedifier, tf.ones_like(disc_seedifier))
+  return adv_loss, loss
+
 
 # The discriminator and the generator optimizers are different since we will train two networks separately.
 
@@ -164,18 +153,17 @@ discriminator_optimizer = tf.keras.optimizers.Adam(1e-4)
 # 
 
 
-EPOCHS = 50
+EPOCHS = 15
 num_examples_to_generate = 16
 
 printed_autoencoder_loss = -1
-printed_generator_loss = -1
+# printed_generator_loss = -1
 printed_discriminator_loss = -1
-printed_seed_gaussian_loss = -1
+printed_adv_loss = -1
 
 # We will reuse this seed overtime (so it's easier)
 # to visualize progress in the animated GIF)
 
-randomseed = tf.random.normal([num_examples_to_generate, noise_dim])
 originalimagefig = plt.figure(figsize=(4,4))
 initialimages = []
 
@@ -198,8 +186,29 @@ def normpdf(x, mean, sd):
     num = np.exp(-np.square(x-newmean)/(2*var))
     return num/denom
 
-# The training loop begins with generator receiving a random seed as input. That seed is used to produce an image. The discriminator is then used to classify real images (drawn from the training set) and fakes images (produced by the generator). The loss is calculated for each of these models, and the gradients are used to update the generator and discriminator.
+def get_gaussian_mixture(example_count):
+  # x_coords = np.random.normal(size=(example_count, 1))
+  # y_coords = np.random.normal(size=(example_count, 1), scale=0.5)
+  # x_coords += 5
 
+  # combine = np.concatenate((x_coords, y_coords), axis=1)
+
+  # result = np.zeros_like(combine)
+
+  # for i in range(example_count):
+  #   rotateamount = np.random.randint(10)
+  #   theta = rotateamount*np.pi/5
+  #   c, s = np.cos(theta), np.sin(theta)
+  #   R = np.array([[c, -s], [s, c]])
+  #   multiply = (R @ combine[i].T).T
+  #   result[i] = multiply
+  # return tf.convert_to_tensor(result)
+  return tf.random.normal([example_count, 2], stddev=5.0)
+
+
+randomseed = get_gaussian_mixture(num_examples_to_generate)
+
+# The training loop begins with generator receiving a random seed as input. That seed is used to produce an image. The discriminator is then used to classify real images (drawn from the training set) and fakes images (produced by the generator). The loss is calculated for each of these models, and the gradients are used to update the generator and discriminator
 
 # Notice the use of `tf.function`
 # This annotation causes the function to be "compiled".
@@ -207,38 +216,36 @@ def normpdf(x, mean, sd):
 
 def train_step(images):
     with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape, tf.GradientTape() as seed_tape:
+      # print(images.shape)
       originalseeds = seedifier(images, training=True)
+
       # fixedparams = originalseeds.numpy()[:, :num_fixed].reshape((-1, num_fixed))
       noiseparams = originalseeds.numpy()[:, num_fixed:].reshape((-1, noise_dim))
+      gaussian_seeds = get_gaussian_mixture(noiseparams.shape[0])
 
-      seed_gaussian_loss = np.sum(-np.log(normpdf(noiseparams, 0, 1)))/1000
+      
 
-      noise = tf.random.normal([noiseparams.shape[0], noise_dim])
-      # seedsrandomized = tf.concat([fixedparams, noise], 1)
-      seedsrandomized = noise
-          
-      generated_images = generator(seedsrandomized, training=True)
+      # generated_images = generator(seedsrandomized, training=True)
 
-      real_output = discriminator(images, training=True)
-      fake_output = discriminator(generated_images, training=True)
+      autoencoder_output = generator(originalseeds, training=True)
 
-      autoencoder_output =  generator(originalseeds, training=True)
+      adv_loss, disc_loss = discriminator_loss(gaussian_seeds, originalseeds)
+      seed_loss = autoencoder_loss(images, autoencoder_output) + adv_loss
+      # gen_loss = seed_loss + generator_loss(fake_output)
+      
 
-      seed_loss = autoencoder_loss(images, autoencoder_output) + seed_gaussian_loss
-      gen_loss = seed_loss + generator_loss(fake_output)
-      disc_loss = discriminator_loss(real_output, fake_output)
 
       global printed_autoencoder_loss
-      global printed_generator_loss 
+      # global printed_generator_loss 
       global printed_discriminator_loss 
-      global printed_seed_gaussian_loss
+      global printed_adv_loss
 
-      printed_autoencoder_loss = (seed_loss - seed_gaussian_loss).numpy()
-      printed_generator_loss = (gen_loss - seed_loss).numpy()
+      printed_autoencoder_loss = (seed_loss - adv_loss).numpy()
+      # printed_generator_loss = (gen_loss - seed_loss).numpy()
       printed_discriminator_loss = disc_loss.numpy()
-      printed_seed_gaussian_loss = seed_gaussian_loss
+      printed_adv_loss = adv_loss.numpy()
 
-    gradients_of_generator = gen_tape.gradient(gen_loss, generator.trainable_variables)
+    gradients_of_generator = gen_tape.gradient(seed_loss, generator.trainable_variables)
     gradients_of_seedifier = seed_tape.gradient(seed_loss, seedifier.trainable_variables)
     gradients_of_discriminator = disc_tape.gradient(disc_loss, discriminator.trainable_variables)
 
@@ -248,9 +255,9 @@ def train_step(images):
 
 def printLosses():
   print("Autoencoder Loss: " + str(printed_autoencoder_loss))
-  print("Adversarial Loss: " + str(printed_generator_loss))
+  # print("Adversarial Loss: " + str(printed_generator_loss))
   print("Discriminator Loss: " + str(printed_discriminator_loss))
-  print("Seed Gaussian Loss: " +  str(printed_seed_gaussian_loss))
+  print("Adversarial Loss: " +  str(printed_adv_loss))
 
 def train(dataset, epochs):
   for epoch in range(epochs):
@@ -274,9 +281,39 @@ def train(dataset, epochs):
                            epochs)
 
 
-# **Generate and save images**
-# 
 
+# **Generate and save images**
+#
+  
+
+
+def generate_grid_from_gaussian(rotate_factor, epoch):
+  x = np.linspace(-2, 2, 10)
+  y = np.linspace(-1, 1, 10)
+  imagenum = 0
+
+  # Generate grid of digits based on seed
+
+  fig = plt.figure(figsize=(10,10))
+
+  for b in y:
+    for a in x:
+      imagenum += 1
+      plt.subplot(10, 10, imagenum)
+      
+      theta = rotate_factor*np.pi/5
+      c, s = np.cos(theta), np.sin(theta)
+      R = np.array([[c, -s], [s, c]])
+
+      rotated = (R @ [[a+5],[b]]).T
+
+      image = generator(tf.convert_to_tensor(rotated), training=False)
+      plt.imshow(image[0, :, :, 0] * 127.5 + 127.5, cmap='gray')
+      plt.axis('off')
+
+    # plt.savefig('image_at_epoch_{:04d}_generated_layer_{:04d}.png'.format(epoch, layer))
+    
+  plt.savefig('image_at_epoch_{:02d}_grid_gaussian{:01d}.png'.format(epoch, rotate_factor))
 
 def generate_and_save_images(model, epoch):
   # Notice `training` is set to False.
@@ -286,12 +323,12 @@ def generate_and_save_images(model, epoch):
   # # Combo version
   # firstseedarray = np.zeros(shape=(num_examples_to_generate, num_fixed))
 
-  # Autoencode Version
-  firstseedarray = np.zeros(shape=(num_examples_to_generate, num_fixed + noise_dim))
+  # # Autoencode Version
+  # firstseedarray = np.zeros(shape=(num_examples_to_generate, num_fixed + noise_dim))
 
-  for i in range(num_examples_to_generate):
+  # for i in range(num_examples_to_generate):
     # for batch in train_dataset:
-      digitimage = initialimages[i]
+      # digitimage = initialimages[i]
       # plt.subplot(4, 4, i+1)
       # plt.imshow(digitimage[:, :, 0] * 127.5 + 127.5, cmap='gray')
       # plt.axis('off')
@@ -300,8 +337,8 @@ def generate_and_save_images(model, epoch):
       # # Combo version
       # firstseedarray[i] = seedifier(tf.convert_to_tensor([digitimage]), training=False).numpy()[:, :num_fixed]
 
-      # Autoencode version
-      firstseedarray[i] = seedifier(tf.convert_to_tensor([digitimage]), training=False)
+      # # Autoencode version
+      # firstseedarray[i] = seedifier(tf.convert_to_tensor([digitimage]), training=False)
 
       # break
   # plt.savefig('preimage_at_epoch_{:04d}.png'.format(epoch))
@@ -309,10 +346,19 @@ def generate_and_save_images(model, epoch):
   # # Combo version
   # finalinput = tf.concat([firstseedarray, randomseed], 1)
 
-  #Autoencode version
-  finalinput = firstseedarray
+  finalinput = get_gaussian_mixture(num_examples_to_generate)
+
+  # #Autoencode version
+  # finalinput = firstseedarray
+
+  # 2-d visualization 
+  if (epoch % 10) == 0:
+    for rotate in range(10):
+      generate_grid_from_gaussian(rotate, epoch)
 
   predictions = model(finalinput, training=False)
+
+  # Output of net with random seeds
 
   fig = plt.figure(figsize=(4,4))
 
@@ -322,7 +368,7 @@ def generate_and_save_images(model, epoch):
       plt.axis('off')
 
   plt.savefig('image_at_epoch_{:04d}.png'.format(epoch))
-  # plt.show()
+  #plt.show()
 
 
 # ## Train the model
@@ -330,9 +376,10 @@ def generate_and_save_images(model, epoch):
 # 
 # At the beginning of the training, the generated images look like random noise. As training progresses, the generated digits will look increasingly real. After about 50 epochs, they resemble MNIST digits. This may take about one minute / epoch with the default settings on Colab.
 
-
 train(train_dataset, EPOCHS)
 
-generator.save("./generatorAutoencoder")
-seedifier.save("./seedifierAutoencoder")
-discriminator.save("./discriminatorAutoencoder")
+generator.save("./generatorAutoencoderBiggerNormal")
+seedifier.save("./seedifierAutoencoderBiggerNormal")
+discriminator.save("./discriminatorAutoencoderBiggerNormal")
+
+print("DONE")

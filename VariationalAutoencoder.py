@@ -283,8 +283,8 @@ def generate_and_save_images(model, epoch):
   # # Combo version
   # firstseedarray = np.zeros(shape=(num_examples_to_generate, num_fixed))
 
-  # Autoencode Version
-  firstseedarray = np.zeros(shape=(num_examples_to_generate, num_fixed + noise_dim))
+  # # Autoencode Version
+  # firstseedarray = np.zeros(shape=(num_examples_to_generate, num_fixed + noise_dim))
 
   for i in range(num_examples_to_generate):
     # for batch in train_dataset:
@@ -297,8 +297,8 @@ def generate_and_save_images(model, epoch):
       # # Combo version
       # firstseedarray[i] = seedifier(tf.convert_to_tensor([digitimage]), training=False).numpy()[:, :num_fixed]
 
-      # Autoencode version
-      firstseedarray[i] = seedifier(tf.convert_to_tensor([digitimage]), training=False)
+      # # Autoencode version
+      # firstseedarray[i] = seedifier(tf.convert_to_tensor([digitimage]), training=False)
 
       # break
   # plt.savefig('preimage_at_epoch_{:04d}.png'.format(epoch))
@@ -306,23 +306,25 @@ def generate_and_save_images(model, epoch):
   # # Combo version
   # finalinput = tf.concat([firstseedarray, randomseed], 1)
 
-  # finalinput = randomseed
+  finalinput = randomseed
 
-  #Autoencode version
-  finalinput = firstseedarray
+  # #Autoencode version
+  # finalinput = firstseedarray
 
-  x = np.linspace(-5, 5, 11)
-  y = np.linspace(-5, 5, 11)
+  # 2-d visualization 
 
-  fig = plt.figure(figsize=(11,11))
+  # x = np.linspace(-5, 5, 11)
+  # y = np.linspace(-5, 5, 11)
 
-  for i, (a,b) in enumerate([(a, b) for a in x for b in y]):
-    plt.subplot(11, 11, i+1)
-    image = generator(tf.convert_to_tensor([[a,b]]), training=False)
-    plt.imshow(image[0, :, :, 0] * 127.5 + 127.5, cmap='gray')
-    plt.axis('off')
+  # fig = plt.figure(figsize=(11,11))
 
-  plt.savefig('image_at_epoch_{:04d}_generated.png'.format(epoch))
+  # for i, (a,b) in enumerate([(a, b) for a in x for b in y]):
+  #   plt.subplot(11, 11, i+1)
+  #   image = generator(tf.convert_to_tensor([[a,b]]), training=False)
+  #   plt.imshow(image[0, :, :, 0] * 127.5 + 127.5, cmap='gray')
+  #   plt.axis('off')
+
+  # plt.savefig('image_at_epoch_{:04d}_generated.png'.format(epoch))
       
 
   predictions = model(finalinput, training=False)
